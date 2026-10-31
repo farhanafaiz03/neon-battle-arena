@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local Arena Battle</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #111827;
+      --text: #e5e7eb;
+      --accent: #60a5fa;
+      --danger: #f87171;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --shadow: rgba(0, 0, 0, 0.35);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: radial-gradient(circle at top, #162033, var(--bg));
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    .game-shell {
+      width: min(92vw, 960px);
+      background: rgba(17, 24, 39, 0.9);
+      border: 2px solid rgba(255,255,255,0.08);
+      border-radius: 16px;
+      box-shadow: 0 20px 60px var(--shadow);
+      overflow: hidden;
+    }
+
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 18px;
+      background: rgba(255,255,255,0.03);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+
+    .scoreboard {
+      display: flex;
+      gap: 20px;
+      font-size: 18px;
+      align-items: center;
+    }
+
+    .player-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(2, 6, 23, 0.60);
+      color: white;
+      text-align: center;
+      font-size: 22px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    .arena-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: linear-gradient(180deg, #0f172a, #101a2a);
+      border-radius: 0 0 16px 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="game-shell">
+    <div class="hud">
+      <div class="scoreboard">
+        <div class="player-tag">
+          <span class="dot" style="background:#60a5fa;"></span>
+          <span id="p1-name">Player 1</span>
+          <span id="p1-score">0</span>
+        </div>
+        <div class="player-tag">
+          <span class="dot" style="background:#f87171;"></span>
+          <span id="p2-name">Player 2</span>
+          <span id="p2-score">0</span>
+        </div>
+      </div>
+      <div id="status">Arena Battle</div>
+    </div>
+
+    <div class="arena-wrap">
+      <div id="overlay">Press Enter to Start</div>
+      <canvas id="gameCanvas" width="960" height="600"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const p1ScoreEl = document.getElementById("p1-score");
+    const p2ScoreEl = document.getElementById("p2-score");
+    const statusEl = document.getElementById("status");
+
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+
+    const keys = {};
+    let running = false;
+    let gameOver = false;
+    let lastTime = 0;
+
+    const player1 = {
+      id: 1,
+      x: WIDTH * 0.2,
+      y: HEIGHT * 0.5,
+      radius: 18,
+      speed: 240,
+      color: "#60a5fa",
+      health: 100,
+      maxHealth: 100,
+      fireRate: 0.24,
+      bulletSpeed: 420,
+      damage: 18,
+      shootCooldown: 0,
+      weaponLevel: 1,
+      score: 0,
+      lastMoveX: 1,
+      lastMoveY: 0,
+      alive: true,
+      respawnTimer: 0
+    };
+
+    const player2 = {
+      id: 2,
+      x: WIDTH * 0.8,
+      y: HEIGHT * 0.5,
+      radius: 18,
+      speed: 240,
+      color: "#f87171",
+      health: 100,
+      maxHealth: 100,
+      fireRate: 0.24,
+      bulletSpeed: 420,
+      damage: 18,
+      shootCooldown: 0,
+      weaponLevel: 1,
+      score: 0,
+      lastMoveX: -1,
+      lastMoveY: 0,
+      alive: true,
+      respawnTimer: 0
+    };
+
+    const bullets = [];
+    const enemies = [];
+    const particles = [];
+    const pickups = [];
+    let enemySpawnTimer = 0;
+    let pickupSpawnTimer = 0;
+    let roundTimer = 80;
+    let waveLevel = 1;
+
+    function clamp(value, min, max) {
+      return Math.min(Math.max(value, min), max);
+    }
+
+    function rand(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    function resetGame() {
+      player1.x = WIDTH * 0.2;
+      player1.y = HEIGHT * 0.5;
+      player2.x = WIDTH * 0.8;
+      player2.y = HEIGHT * 0.5;
+      player1.health = player1.maxHealth;
+      player2.health = player2.maxHealth;
+      player1.alive = true;
+      player2.alive = true;
+      player1.respawnTimer = 0;
+      player2.respawnTimer = 0;
+      player1.score = 0;
+      player2.score = 0;
+      enemies.length = 0;
+      bullets.length = 0;
+      particles.length = 0;
+      pickups.length = 0;
+      enemySpawnTimer = 0;
+      pickupSpawnTimer = 0;
+      roundTimer = 80;
+      waveLevel = 1;
+      gameOver = false;
+      overlay.textContent = "Press Enter to Start";
+      updateHUD();
+    }
+
+    function startGame() {
+      if (!running) {
+        running = true;
+        gameOver = false;
+        overlay.textContent = "";
+      }
+    }
+
+    function stopGame() {
+      running = false;
+      overlay.textContent = "Press Enter to Start";
+    }
+
+    function updateHUD() {
+      p1ScoreEl.textContent = player1.score;
+      p2ScoreEl.textContent = player2.score;
+      statusEl.textContent =
+        `Timer: ${Math.ceil(roundTimer)}s | Wave ${waveLevel} | ${player1.health.toFixed(0)} / ${player1.maxHealth} | ${player2.health.toFixed(0)} / ${player2.maxHealth}`;
+    }
+
+    function createParticles(x, y, color, count = 12) {
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x, y,
+          vx: rand(-100, 100),
+          vy: rand(-100, 100),
+          radius: rand(2, 5),
+          life: rand(0.3, 0.8),
+          color
+        });
+      }
+    }
+
+    function spawnEnemy() {
+      const edge = Math.floor(Math.random() * 4);
+      let x = 0, y = 0;
+
+      if (edge === 0) {
+        x = rand(-20, WIDTH + 20);
+        y = -30;
+      } else if (edge === 1) {
+        x = WIDTH + 30;
+        y = rand(-20, HEIGHT + 20);
+      } else if (edge === 2) {
+        x = rand(-20, WIDTH + 20);
+        y = HEIGHT + 30;
+      } else {
+        x = -30;
+        y = rand(-20, HEIGHT + 20);
+      }
+
+      const typeRoll = Math.random();
+      const enemy = {
+        x,
+        y,
+        radius: 14 + Math.random() * 6,
+        speed: 55 + waveLevel * 6 + Math.random() * 25,
+        health: 35 + waveLevel * 10,
+        color: typeRoll > 0.8 ? "#f59e0b" : "#a78bfa",
+        fireCooldown: rand(0.8, 2.4),
+        shootTimer: rand(0.5, 1.5),
+        damage: typeRoll > 0.8 ? 18 : 10,
+        isHeavy: typeRoll > 0.8
+      };
+
+      enemies.push(enemy);
+    }
+
+    function spawnPickup() {
+      const types = ["health", "boost"];
+      const type = types[Math.floor(Math.random() * types.length)];
+      pickups.push({
+        x: rand(60, WIDTH - 60),
+        y: rand(60, HEIGHT - 60),
+        radius: 11,
+        type,
+        life: 9
+      });
+    }
+
+    function shootFrom(player, targetX, targetY) {
+      if (!player.alive) return;
+
+      const dx = targetX - player.x;
+      const dy = targetY - player.y;
+      const length = Math.hypot(dx, dy) || 1;
+      const vx = (dx / length) * player.bulletSpeed;
+      const vy = (dy / length) * player.bulletSpeed;
+
+      bullets.push({
+        x: player.x + (dx / length) * (player.radius + 8),
+        y: player.y + (dy / length) * (player.radius + 8),
+        vx,
+        vy,
+        radius: 5,
+        owner: player.id,
+        damage: player.damage,
+        color: player.color
+      });
+
+      player.shootCooldown = player.fireRate;
+    }
+
+    function handlePlayerMovement(player, controls) {
+      if (!player.alive) return;
+
+      let moveX = 0;
+      let moveY = 0;
+
+      if (keys[controls.up]) moveY -= 1;
+      if (keys[controls.down]) moveY += 1;
+      if (keys[controls.left]) moveX -= 1;
+      if (keys[controls.right]) moveX += 1;
+
+      const magnitude = Math.hypot(moveX, moveY) || 1;
+      moveX /= magnitude;
+      moveY /= magnitude;
+
+      player.x += moveX * player.speed * (1 / 60);
+      player.y += moveY * player.speed * (1 / 60);
+
+      if (moveX !== 0 || moveY !== 0) {
+        player.lastMoveX = moveX;
+        player.lastMoveY = moveY;
+      }
+
+      player.x = clamp(player.x, player.radius, WIDTH - player.radius);
+      player.y = clamp(player.y, player.radius, HEIGHT - player.radius);
+
+      if (keys[controls.shoot] && player.shootCooldown <= 0) {
+        const aimX = player.lastMoveX !== 0 || player.lastMoveY !== 0
+          ? player.x + player.lastMoveX * 80
+          : player.x + (player.id === 1 ? 1 : -1) * 80;
+
+        const aimY = player.lastMoveX !== 0 || player.lastMoveY !== 0
+          ? player.y + player.lastMoveY * 80
+          : player.y;
+
+        shootFrom(player, aimX, aimY);
+      }
+
+      player.shootCooldown = Math.max(0, player.shootCooldown - (1 / 60));
+    }
+
+    function updatePlayerActions() {
+      handlePlayerMovement(player1, {
+        up: "KeyW",
+        down: "KeyS",
+        left: "KeyA",
+        right: "KeyD",
+        shoot: "Space"
+      });
+
+      handlePlayerMovement(player2, {
+        up: "ArrowUp",
+        down: "ArrowDown",
+        left: "ArrowLeft",
+        right: "ArrowRight",
+        shoot: "ShiftLeft"
+      });
+
+      if (keys["ShiftRight"]) {
+        const aimX = player2.x + player2.lastMoveX * 80;
+        const aimY = player2.y + player2.lastMoveY * 80;
+        if (player2.shootCooldown <= 0) shootFrom(player2, aimX, aimY);
+      }
+    }
+
+    function hurtPlayer(player, damage) {
+      if (!player.alive) return;
+      player.health -= damage;
+
+      createParticles(player.x, player.y, player.color, 10);
+
+      if (player.health <= 0) {
+        player.alive = false;
+        player.respawnTimer = 2.2;
+        const killerId = bullets.find(b => b.owner !== player.id && b.owner !== 0)?.owner ?? 0;
+        if (killerId === 1) {
+          player1.score += 1;
+        } else if (killerId === 2) {
+          player2.score += 1;
+        }
+        if (player.id === 1) {
+          player2.score += 0;
+        }
+        player1.shootCooldown = 0;
+        player2.shootCooldown = 0;
+      }
+    }
+
+    function handleBullets(delta) {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const bullet = bullets[i];
+        bullet.x += bullet.vx * delta;
+        bullet.y += bullet.vy * delta;
+
+        if (bullet.x < -20 || bullet.x > WIDTH + 20 || bullet.y < -20 || bullet.y > HEIGHT + 20) {
+          bullets.splice(i, 1);
+          continue;
+        }
+
+        if (bullet.owner === 1) {
+          for (let j = enemies.length - 1; j >= 0; j--) {
+            const enemy = enemies[j];
+            const dx = bullet.x - enemy.x;
+            const dy = bullet.y - enemy.y;
+            const dist = Math.hypot(dx, dy);
+
+            if (dist < bullet.radius + enemy.radius) {
+              enemy.health -= bullet.damage;
+              createParticles(bullet.x, bullet.y, bullet.color, 6);
+              bullets.splice(i, 1);
+              if (enemy.health <= 0) {
+                enemies.splice(j, 1);
+                player1.score += 1;
+                const pickupRoll = Math.random();
+                if (pickupRoll < 0.2) {
+                  const type = Math.random() < 0.5 ? "health" : "boost";
+                  pickups.push({
+                    x: enemy.x,
+                    y: enemy.y,
+                    radius: 12,
+                    type,
+                    life: 12
+                  });
+                }
+                createParticles(enemy.x, enemy.y, "#fbbf24", 18);
+              }
+              break;
+            }
+          }
+        } else if (bullet.owner === 2) {
+          for (let j = enemies.length - 1; j >= 0; j--) {
+            const enemy = enemies[j];
+            const dx = bullet.x - enemy.x;
+            const dy = bullet.y - enemy.y;
+            const dist = Math.hypot(dx, dy);
+
+            if (dist < bullet.radius + enemy.radius) {
+              enemy.health -= bullet.damage;
+              createParticles(bullet.x, bullet.y, bullet.color, 6);
+              bullets.splice(i, 1);
+              if (enemy.health <= 0) {
+                enemies.splice(j, 1);
+                player2.score += 1;
+                const pickupRoll = Math.random();
+                if (pickupRoll < 0.2) {
+                  const type = Math.random() < 0.5 ? "health" : "boost";
+                  pickups.push({
+                    x: enemy.x,
+                    y: enemy.y,
+                    radius: 12,
+                    type,
+                    life: 12
+                  });
+                }
+                createParticles(enemy.x, enemy.y, "#fbbf24", 18);
+              }
+              break;
+            }
+          }
+        } else {
+          // enemy bullet
+          const targetPlayer = bullet.owner === 0 ? player1 : player2;
+          // not used here, but keep for future
+        }
+
+        if (bullets[i]) {
+          const distToP1 = Math.hypot(bullet.x - player1.x, bullet.y - player1.y);
+          if (bullet.owner !== 1 && distToP1 < bullet.radius + player1.radius) {
+            hurtPlayer(player1, bullet.damage);
+            bullets.splice(i, 1);
+            continue;
+          }
+
+          const distToP2 = Math.hypot(bullet.x - player2.x, bullet.y - player2.y);
+          if (bullet.owner !== 2 && distToP2 < bullet.radius + player2.radius) {
+            hurtPlayer(player2, bullet.damage);
+            bullets.splice(i, 1);
+          }
+        }
+      }
+    }
+
+    function updateEnemies(delta) {
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const enemy = enemies[i];
+        const target = Math.hypot(player1.x - enemy.x, player1.y - enemy.y) <
+          Math.hypot(player2.x - enemy.x, player2.y - enemy.y)
+          ? player1 : player2;
+
+        if (target && target.alive) {
+          const dx = target.x - enemy.x;
+          const dy = target.y - enemy.y;
+          const len = Math.hypot(dx, dy) || 1;
+
+          enemy.x += (dx / len) * enemy.speed * delta;
+          enemy.y += (dy / len) * enemy.speed * delta;
+
+          if (Math.hypot(target.x - enemy.x, target.y - enemy.y) < 220) {
+            enemy.shootTimer -= delta;
+            if (enemy.shootTimer <= 0) {
+              const aimX = target.x;
+              const aimY = target.y;
+              const angleX = aimX - enemy.x;
+              const angleY = aimY - enemy.y;
+              const mag = Math.hypot(angleX, angleY) || 1;
+
+              bullets.push({
+                x: enemy.x,
+                y: enemy.y,
+                vx: (angleX / mag) * 260,
+                vy: (angleY / mag) * 260,
+                radius: 5,
+                owner: 0,
+                damage: enemy.damage,
+                color: "#fbbf24"
+              });
+
+              enemy.shootTimer = enemy.isHeavy ? 1.8 : 2.5;
+            }
+          }
+        }
+
+        // Collision with players
+        const distP1 = Math.hypot(enemy.x - player1.x, enemy.y - player1.y);
+        if (distP1 < enemy.radius + player1.radius) {
+          hurtPlayer(player1, 12 * delta * 4);
+        }
+
+        const distP2 = Math.hypot(enemy.x - player2.x, enemy.y - player2.y);
+        if (distP2 < enemy.radius + player2.radius) {
+          hurtPlayer(player2, 12 * delta * 4);
+        }
+
+        if (enemy.health <= 0) {
+          enemies.splice(i, 1);
+        }
+      }
+    }
+
+    function updatePickups(delta) {
+      for (let i = pickups.length - 1; i >= 0; i--) {
+        const pickup = pickups[i];
+        pickup.life -= delta;
+
+        const distP1 = Math.hypot(player1.x - pickup.x, player1.y - pickup.y);
+        const distP2 = Math.hypot(player2.x - pickup.x, player2.y - pickup.y);
+
+        if (distP1 < player1.radius + pickup.radius) {
+          if (pickup.type === "health") {
+            player1.health = Math.min(player1.maxHealth, player1.health + 25);
+          } else {
+            player1.fireRate = Math.max(0.08, player1.fireRate - 0.02);
+            player1.damage += 2;
+          }
+          pickups.splice(i, 1);
+          continue;
+        }
+
+        if (distP2 < player2.radius + pickup.radius) {
+          if (pickup.type === "health") {
+            player2.health = Math.min(player2.maxHealth, player2.health + 25);
+          } else {
+            player2.fireRate = Math.max(0.08, player2.fireRate - 0.02);
+            player2.damage += 2;
+          }
+          pickups.splice(i, 1);
+          continue;
+        }
+
+        if (pickup.life <= 0) {
+          pickups.splice(i, 1);
+        }
+      }
+    }
+
+    function updateParticles(delta) {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx * delta;
+        p.y += p.vy * delta;
+        p.life -= delta;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    function updateRespawns(delta) {
+      if (!player1.alive) {
+        player1.respawnTimer -= delta;
+        if (player1.respawnTimer <= 0) {
+          player1.x = WIDTH * 0.2;
+          player1.y = HEIGHT * 0.5;
+          player1.health = player1.maxHealth;
+          player1.alive = true;
+          player1.fireRate = 0.24;
+          player1.damage = 18;
+          createParticles(player1.x, player1.y, player1.color, 20);
+        }
+      }
+
+      if (!player2.alive) {
+        player2.respawnTimer -= delta;
+        if (player2.respawnTimer <= 0) {
+          player2.x = WIDTH * 0.8;
+          player2.y = HEIGHT * 0.5;
+          player2.health = player2.maxHealth;
+          player2.alive = true;
+          player2.fireRate = 0.24;
+          player2.damage = 18;
+          createParticles(player2.x, player2.y, player2.color, 20);
+        }
+      }
+    }
+
+    function checkRoundEnd() {
+      if (player1.score >= 10 || player2.score >= 10 || roundTimer <= 0) {
+        running = false;
+        let winner = "Draw!";
+        if (player1.score > player2.score) winner = "Player 1 Wins!";
+        if (player2.score > player1.score) winner = "Player 2 Wins!";
+        overlay.textContent = `${winner} Press Enter to Restart`;
+      }
+    }
+
+    function update(delta) {
+      if (!running) return;
+
+      roundTimer -= delta;
+      enemySpawnTimer -= delta;
+      pickupSpawnTimer -= delta;
+
+      if (enemySpawnTimer <= 0) {
+        const spawnCount = Math.min(3 + Math.floor(waveLevel / 2), 6);
+        for (let i = 0; i < spawnCount; i++) {
+          spawnEnemy();
+        }
+        enemySpawnTimer = Math.max(0.7, 2.2 - waveLevel * 0.08);
+        waveLevel += 1;
+      }
+
+      if (pickupSpawnTimer <= 0) {
+        spawnPickup();
+        pickupSpawnTimer = 7.5;
+      }
+
+      updatePlayerActions();
+      handleBullets(delta);
+      updateEnemies(delta);
+      updatePickups(delta);
+      updateParticles(delta);
+      updateRespawns(delta);
+
+      if (player1.health <= 0) player1.health = 0;
+      if (player2.health <= 0) player2.health = 0;
+
+      updateHUD();
+      checkRoundEnd();
+    }
+
+    function drawHealthBar(x, y, width, height, value, maxValue, color) {
+      ctx.fillStyle = "rgba(255,255,255,0.15)";
+      ctx.fillRect(x, y, width, height);
+
+      const ratio = Math.max(0, value / maxValue);
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, width * ratio, height);
+
+      ctx.strokeStyle = "rgba(255,255,255,0.3)";
+      ctx.strokeRect(x, y, width, height);
+    }
+
+    function drawCircle(entity, color) {
+      ctx.beginPath();
+      ctx.fillStyle = color;
+      ctx.arc(entity.x, entity.y, entity.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawPlayer(player) {
+      if (!player.alive) return;
+
+      ctx.beginPath();
+      ctx.fillStyle = player.color;
+      ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // direction indicator
+      ctx.beginPath();
+      ctx.strokeStyle = "rgba(255,255,255,0.7)";
+      ctx.lineWidth = 3;
+      ctx.moveTo(player.x, player.y);
+      ctx.lineTo(
+        player.x + player.lastMoveX * 20,
+        player.y + player.lastMoveY * 20
+      );
+      ctx.stroke();
+
+      // health bar
+      const barX = player.x - 28;
+      const barY = player.y - player.radius - 18;
+      drawHealthBar(barX, barY, 56, 8, player.health, player.maxHealth, player.color);
+    }
+
+    function drawEnemy(enemy) {
+      ctx.beginPath();
+      ctx.fillStyle = enemy.color;
+      ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+      ctx.fill();
+      drawHealthBar(enemy.x - 22, enemy.y - enemy.radius - 16, 44, 6, enemy.health, 35 + waveLevel * 10, "#fbbf24");
+    }
+
+    function drawBullet(bullet) {
+      ctx.beginPath();
+      ctx.fillStyle = bullet.color;
+      ctx.arc(bullet.x, bullet.y, bullet.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawPickup(pickup) {
+      const color = pickup.type === "health" ? "#34d399" : "#fbbf24";
+      ctx.beginPath();
+      ctx.fillStyle = color;
+      ctx.arc(pickup.x, pickup.y, pickup.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#0b1220";
+      ctx.font = "bold 12px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText(pickup.type === "health" ? "+" : "⚡", pickup.x, pickup.y + 4);
+    }
+
+    function drawParticles() {
+      for (const p of particles) {
+        ctx.beginPath();
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = Math.max(0, p.life);
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawArena() {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+      // Background
+      ctx.fillStyle = "#0b1220";
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      // Grid
+      ctx.strokeStyle = "rgba(255,255,255,0.04)";
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= WIDTH; x += 30) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, HEIGHT);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= HEIGHT; y += 30) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(WIDTH, y);
+        ctx.stroke();
+      }
+
+      // Center area glow
+      ctx.beginPath();
+      ctx.fillStyle = "rgba(96, 165, 250, 0.04)";
+      ctx.fillRect(WIDTH * 0.15, HEIGHT * 0.15, WIDTH * 0.7, HEIGHT * 0.7);
+    }
+
+    function render() {
+      drawArena();
+
+      for (const pickup of pickups) drawPickup(pickup);
+      for (const bullet of bullets) drawBullet(bullet);
+      for (const enemy of enemies) drawEnemy(enemy);
+
+      drawPlayer(player1);
+      drawPlayer(player2);
+
+      drawParticles();
+    }
+
+    function frame(ts) {
+      const delta = Math.min((ts - lastTime) / 1000 || 0.016, 0.033);
+      lastTime = ts;
+
+      update(delta);
+      render();
+
+      requestAnimationFrame(frame);
+    }
+
+    document.addEventListener("keydown", (event) => {
+      keys[event.code] = true;
+
+      if (event.code === "Space") {
+        event.preventDefault();
+      }
+
+      if (event.code === "Enter" && !running) {
+        resetGame();
+        startGame();
+        overlay.textContent = "";
+      }
+    });
+
+    document.addEventListener("keyup", (event) => {
+      keys[event.code] = false;
+    });
+
+    resetGame();
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
